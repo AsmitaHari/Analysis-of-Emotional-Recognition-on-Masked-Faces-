@@ -12,9 +12,12 @@ from torch.utils.data import Dataset
 from torch.utils.data import TensorDataset, DataLoader
 import csv
 import cv2
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
 # Device configuration
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-num_epochs = 4
+num_epochs = 100
 batch_size = 4
 learning_rate = 0.001
 class ImageLoader(Dataset):
@@ -27,6 +30,7 @@ class ImageLoader(Dataset):
                 for dat in csv_reader:
                     checkLen = False
                     x = np.array([])
+                    print(dat[0])
                     for imagePath in glob.glob(dat[0]+"/*.png"):
                         dirName = os.path.dirname(imagePath)
                         length = len(glob.glob(dirName + "/*.png"))
@@ -40,7 +44,7 @@ class ImageLoader(Dataset):
 
 
                     if(checkLen):
-                        self.label.append(torch.tensor([int(dat[1])]))
+                        self.label.append(int(dat[1]))
                         # np_array = np.array(dat[1:], dtype=np.float32).reshape(input_size, -1)
                         self.dataset.append(torch.from_numpy(x))
         except FileNotFoundError:
@@ -61,7 +65,7 @@ class ImageLoader(Dataset):
 def lstm_style_batching(batch):
     data = [item[0] for item in batch]
     label = [item[1] for item in batch]
-    data = torch.cat(data, dim=1)
+    data =data
     label = torch.cat(label, dim=0)
     return data, label
 
@@ -69,27 +73,39 @@ def readImages():
 
 
 
-    with open("imageFolder.csv", 'w',newline="") as f:
-        writer = csv.writer(f)
-        fileList = []
-        for folder in glob.glob('C:/Users/asmit/PycharmProjects/pytorch/739-proj/outFolder/**/**'):
-            row = []
-            row.append(folder)
-            fileName = os.path.basename(folder)
-            dir = folder.split("\\")
-            dirPath = os.path.join("C:/RIT-Stuff/Topics in System/Project/Emotion_labels/Emotion/", dir[1], dir[2])
-            text = 0
-            for filepath in glob.glob(dirPath + "/*.txt"):
-                file1 = open(filepath, "r+")
-                splitVal = file1.read().split(".")
-                text = int(splitVal[0])
-            row.append(text)
-            fileList.append(row)
-        writer.writerows(fileList)
+    # with open("imageFolder.csv", 'w',newline="") as f:
+    #     writer = csv.writer(f)
+    #     fileList = []
+    #     for folder in glob.glob('C:/Users/asmit/PycharmProjects/pytorch/739-proj/outFolder/**/**'):
+    #         row = []
+    #         row.append(folder)
+    #         fileName = os.path.basename(folder)
+    #         dir = folder.split("\\")
+    #         dirPath = os.path.join("C:/RIT-Stuff/Topics in System/Project/Emotion_labels/Emotion/", dir[1], dir[2])
+    #         text = 0
+    #         for filepath in glob.glob(dirPath + "/*.txt"):
+    #             file1 = open(filepath, "r+")
+    #             splitVal = file1.read().split(".")
+    #             text = int(splitVal[0])
+    #         row.append(text)
+    #         fileList.append(row)
+    #     writer.writerows(fileList)
 
-        train_loader = DataLoader(ImageLoader("imageFolder.csv"), batch_size=2,shuffle=True,num_workers=8)
+    dataFrame = pd.read_csv('imageFolder.csv', sep=",")
+    train_size = 0.8
+    validate_size = 0.1
+    train, valid, test = np.split(dataFrame.sample(frac=1), [int(train_size * len(dataFrame)),
+                                                             int((validate_size + train_size) * len(dataFrame))])
+    train.to_csv('mfcc_train_images.csv', index=False)
+    test.to_csv('mfcc_test_images.csv', index=False)
+    valid.to_csv('mfcc_valid_images.csv', index=False)
 
-    return train_loader
+    train_loader = DataLoader(ImageLoader("mfcc_train_images.csv"), batch_size=4,shuffle=True,num_workers=8)
+    test_loader = DataLoader(ImageLoader("mfcc_test_images.csv"), batch_size=4, shuffle=True,num_workers=8)
+    valid_loader = DataLoader(ImageLoader("mfcc_valid_images.csv"), batch_size=4, shuffle=True,num_workers=8)
+
+
+    return train_loader,test_loader,valid_loader
 
 class ConvNet(nn.Module):
     def __init__(self):
@@ -107,8 +123,8 @@ class ConvNet(nn.Module):
 
         self.adaptive_pool = nn.AdaptiveAvgPool1d(256)
         self.fc1 = nn.Linear(256, 64)
-        self.fc2 = nn.Linear(64, 2)
-        # image size reduces by 2 while applying padding/ Hence last image will a dimesnsion 0f 16 * 5* 5
+        self.fc2 = nn.Linear(64, 8)
+
 
     def forward(self, x):
         # x= self.conv1(x.float())
@@ -131,36 +147,84 @@ class ConvNet(nn.Module):
         x = self.fc2(x)
         x = F.log_softmax(x, dim=1)
         return x
-def train(train_loader):
+def validation_metrics(model, dataset):
+    '***Insert your code here'
+    confusionMatrix = torch.zeros(8, 8)
+    y_pred = []
+    y_label = []
+    predlist = torch.zeros(0, dtype=torch.long, device='cpu')
+    lbllist = torch.zeros(0, dtype=torch.long, device='cpu')
+    n_correct = 0
+    n_samples = 0
+    with torch.no_grad():
+
+        for audio, labels in dataset:
+            audio = audio
+            labels = labels
+            outputs = model(audio)
+            # max returns (value ,index)
+            _, predicted = torch.max(outputs.data, 1)
+            n_samples += labels.size(0)
+            n_correct += (predicted == labels).sum().item()
+            predlist = torch.cat([predlist, predicted.view(-1).cpu()])
+            lbllist = torch.cat([lbllist, labels.view(-1).cpu()])
+            for t, p in zip(labels.view(-1), predicted.view(-1)):
+                confusionMatrix[t.long(), p.long()] += 1
+    acc = 100.0 * n_correct / n_samples
+    print(f'Accuracy of the network on the 10000 test images: {acc} %')
+    cf = confusion_matrix(lbllist, predlist)
+    sns.heatmap(cf, annot=True)
+    plt.show()
+    return acc, confusion_matrix
+def train(train_loader,valid_loader,test_loader):
     print("training")
 
     model = ConvNet().to(device)
 
-    criterion = nn.CrossEntropyLoss()
-    optimzer = torch.optim.SGD(model.parameters(), lr=learning_rate)
-
+    loss_fn = nn.CrossEntropyLoss()
+    optimizer = optim.Adam(params=model.parameters(), lr=learning_rate)
     n_total_steps = len(train_loader)
-
     for epoch in range(num_epochs):
-        for i, (images, lables) in enumerate(train_loader):
+        totalLoss = 0.0
+        for i, (audio, labels) in enumerate(train_loader):
+            # origin shape: [N, 1, 28, 28]
+            # resized: [N, 28, 28]
 
-            images = images.to(device)
-            lables = lables.to(device)
+            # Forward pass\
+            model.train()
+            outputs = model(audio)
+            loss = loss_fn(outputs, labels)
+            totalLoss = totalLoss + loss
 
-            # forwaed
-            output = model(images)
-            loss = criterion(output, torch.max(lables, 1)[1])
-
-            # backward
-            optimzer.zero_grad()
+            # Backward and optimize
+            optimizer.zero_grad()
             loss.backward()
-            optimzer.step()
+            optimizer.step()
 
+        print(f'Epoch [{epoch + 1}/{num_epochs}], Step [{i + 1}/{n_total_steps}], Loss: {loss.item():.4f}')
 
-            print(f'epoch {epoch + 1}/{num_epochs}, step {i + 1}/{n_total_steps}, loss ={loss.item():.4f}')
+    n_total_steps = len(valid_loader)
+    for epoch in range(num_epochs):
+        for i, (audio, labels) in enumerate(valid_loader):
+            # origin shape: [N, 1, 28, 28]
+            # resized: [N, 28, 28]
 
+            # Forward pass\
+            model.eval()
+            outputs = model(audio)
+            loss = loss_fn(outputs, labels)
+
+            # Backward and optimize
+            optimizer.zero_grad()
+            optimizer.step()
+
+            if (i + 1) % 10 == 0:
+                print(
+                    f'Epoch for validation [{epoch + 1}/{num_epochs}], Step [{i + 1}/{n_total_steps}], Loss: {loss.item():.4f}')
+
+    validation_metrics(model, test_loader)
 
 if __name__ == '__main__':
-    train_loader = readImages()
+    train_loader,test_loader,valid_loader = readImages()
     print("Done with images")
-    train(train_loader)
+    train(train_loader,valid_loader,test_loader)
