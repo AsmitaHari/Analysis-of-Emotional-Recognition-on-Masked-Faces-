@@ -11,7 +11,19 @@ import torch.utils.data as data_utils
 from torch.utils.data import Dataset
 from torch.utils.data import TensorDataset, DataLoader
 import csv
+from sklearn.metrics import confusion_matrix
+import seaborn as sns
+import matplotlib.pyplot as plt
+from sklearn.metrics import roc_curve, auc
+from scipy.interpolate import interp1d
+from itertools import cycle
+from scipy.interpolate import interp1d
+from sklearn.metrics import f1_score
 
+input_size = 136
+h1 = 120
+output_dim = 8
+num_layers = 2
 input_size = 136
 h1 = 120
 output_dim = 8
@@ -51,6 +63,121 @@ def lstm_style_batching(batch):
     data = torch.cat(data, dim=1)
     label = torch.cat(label, dim=0)
     return data, label
+
+def validation_metrics(model, dataset):
+    '***Insert your code here'
+    confusionMatrix = torch.zeros(8, 8)
+    y_pred = []
+    y_label = []
+    y_test = []
+    y_score = []
+    predlist = torch.zeros(0, dtype=torch.long, device='cpu')
+    lbllist = torch.zeros(0, dtype=torch.long, device='cpu')
+    n_correct = 0
+    n_samples = 0
+    actuals = []
+    probabilities  = []
+    which_class = 7
+    with torch.no_grad():
+
+        for audio, labels in dataset:
+            audio = audio
+            labels = labels
+            outputs = model(audio)
+            prediction = outputs.argmax(dim=1, keepdim=True)
+            actuals.extend(labels.view_as(prediction) == which_class)
+            probabilities.extend(np.exp(outputs[:, which_class]))
+            # max returns (value ,index)
+            _, predicted = torch.max(outputs, 1)
+            n_samples += labels.size(0)
+            n_correct += (predicted == labels).sum().item()
+            predlist = torch.cat([predlist, predicted.view(-1).cpu()])
+            lbllist = torch.cat([lbllist, labels.view(-1).cpu()])
+            for t, p in zip(labels.view(-1), predicted.view(-1)):
+                confusionMatrix[t.long(), p.long()] += 1
+            y_score.append(predicted.numpy())
+            y_test.append(labels.numpy())
+    print(y_score)
+    print(y_test)
+    acc = 100.0 * n_correct / n_samples
+    print(f'Accuracy of the network on the 10000 test images: {acc} %')
+    cf = confusion_matrix(lbllist, predlist)
+    sns.heatmap(cf, annot=True)
+    plt.show()
+    plot_roc([i.item() for i in actuals], [i.item() for i in probabilities],8)
+    return acc, confusion_matrix
+
+
+def plot_roc(y_test, y_score, N_classes):
+    """
+    compute ROC curve and ROC area for each class in each fold
+
+    """
+    #print('F1 score: %f' % f1_score(y_test, y_score, average='micro'))
+
+    lw = 2
+    fpr = dict()
+    tpr = dict()
+    roc_auc = dict()
+    fpr, tpr, _ = roc_curve(y_test, y_score)
+    roc_auc = auc(fpr, tpr)
+    plt.figure()
+    lw = 2
+    plt.plot(fpr, tpr, color='darkorange',
+             lw=lw, label='ROC curve (area = %0.2f)' % roc_auc)
+    plt.plot([0, 1], [0, 1], color='navy', lw=lw, linestyle='--')
+    plt.xlim([0.0, 1.0])
+    plt.ylim([0.0, 1.05])
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('ROC for digit=%d class' % N_classes)
+    plt.legend(loc="lower right")
+    plt.show()
+    # for i in range(N_classes):
+    #     fpr[i], tpr[i], _ = roc_curve(y_test, y_score)
+    #     roc_auc[i] = auc(fpr[i], tpr[i])
+    #
+    # # First aggregate all false positive rates
+    # all_fpr = np.unique(np.concatenate([fpr[i] for i in range(N_classes)]))
+    #
+    # # Then interpolate all ROC curves at this points
+    # mean_tpr = np.zeros_like(all_fpr)
+    # for i in range(N_classes):
+    #     mean_tpr += interp1d(all_fpr, fpr[i], tpr[i])
+    #
+    # # Finally average it and compute AUC
+    # mean_tpr /= N_classes
+    #
+    # fpr["macro"] = all_fpr
+    # tpr["macro"] = mean_tpr
+    # roc_auc["macro"] = auc(fpr["macro"], tpr["macro"])
+    #
+    # # Plot all ROC curves
+    # plt.figure()
+    # plt.plot(fpr["micro"], tpr["micro"],
+    #          label='micro-average ROC curve (area = {0:0.2f})'
+    #                ''.format(roc_auc["micro"]),
+    #          color='deeppink', linestyle=':', linewidth=4)
+    #
+    # plt.plot(fpr["macro"], tpr["macro"],
+    #          label='macro-average ROC curve (area = {0:0.2f})'
+    #                ''.format(roc_auc["macro"]),
+    #          color='navy', linestyle=':', linewidth=4)
+    #
+    # colors = cycle(['aqua', 'darkorange', 'cornflowerblue'])
+    # for i, color in zip(range(N_classes), colors):
+    #     plt.plot(fpr[i], tpr[i], color=color, lw=lw,
+    #              label='ROC curve of class {0} (area = {1:0.2f})'
+    #                    ''.format(i, roc_auc[i]))
+    #
+    # plt.plot([0, 1], [0, 1], 'k--', lw=lw)
+    # plt.xlim([0.0, 1.0])
+    # plt.ylim([0.0, 1.05])
+    # plt.xlabel('False Positive Rate')
+    # plt.ylabel('True Positive Rate')
+    # plt.title('Some extension of Receiver operating characteristic to multi-class')
+    # plt.legend(loc="lower right")
+    # plt.show()
 
 def readCsv():
     list = []
@@ -170,6 +297,27 @@ def lstm(trainLoader) :
             optimizer.step()
 
         print(f'Epoch [{epoch + 1}/{num_epochs}], Step [{i + 1}/{n_total_steps}], Loss: {loss.item():.4f}')
+
+    n_total_steps = len(valid_loader)
+    for epoch in range(num_epochs):
+        for i, (audio, labels) in enumerate(valid_loader):
+            # origin shape: [N, 1, 28, 28]
+            # resized: [N, 28, 28]
+
+            # Forward pass\
+            model.eval()
+            outputs = model(audio)
+            loss = loss_fn(outputs, labels)
+
+            # Backward and optimize
+            optimizer.zero_grad()
+            optimizer.step()
+
+            if (i + 1) % 10 == 0:
+                print(
+                    f'Epoch for validation [{epoch + 1}/{num_epochs}], Step [{i + 1}/{n_total_steps}], Loss: {loss.item():.4f}')
+
+    validation_metrics(model, test_loader)
 
 
 
